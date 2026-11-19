@@ -35,6 +35,7 @@ func init() {
 		{"remove_apps", "Remove an app from the allowed list", removeApps},
 		{"open", "Open one of your allowed apps", open},
 		{"reset_password", "Change your password", resetPassword},
+		{"security_question", "Add or change your security question", securityQuestion},
 		{"force_unlock", "Forgot your password? Unlocks after a wait", forceUnlock},
 		{"status", "See what is going on right now", status},
 		{"install", "Install Peanut as a Windows service", install},
@@ -126,7 +127,11 @@ func runSetup() bool {
 	if !ok {
 		return false
 	}
-	resp, ok := call(proto.Request{Cmd: proto.CmdSetup, Name: name, Password: pw})
+	question, answer, ok := newQuestion()
+	if !ok {
+		return false
+	}
+	resp, ok := call(proto.Request{Cmd: proto.CmdSetup, Name: name, Password: pw, Question: question, Answer: answer})
 	if !ok {
 		return false
 	}
@@ -159,6 +164,74 @@ func newPassword() (string, bool) {
 	}
 }
 
+var presetQuestions = []string{
+	"What was the name of your first pet?",
+	"In what city were you born?",
+	"What was your childhood nickname?",
+	"What was the last name of your favorite teacher?",
+}
+
+func newQuestion() (string, string, bool) {
+	ui.Say(ui.Curious, "Pick a security question.", "I'll ask it if you forget your password.")
+	for i, q := range presetQuestions {
+		ui.Plain("%d. %s", i+1, q)
+	}
+	ui.Plain("%d. Write my own", len(presetQuestions)+1)
+	fmt.Println()
+	i, ok := ui.Pick("Pick a number: ", len(presetQuestions)+1)
+	if !ok {
+		return "", "", false
+	}
+	question := ""
+	if i < len(presetQuestions) {
+		question = presetQuestions[i]
+	} else {
+		var err error
+		if question, err = ui.Ask("  Your question: "); err != nil || strings.TrimSpace(question) == "" {
+			return "", "", false
+		}
+	}
+	ui.Plain("Question: %s", question)
+	for {
+		first, err := ui.Secret("  Answer: ")
+		if err != nil {
+			return "", "", false
+		}
+		if len(normalize(first)) < 3 {
+			ui.Plain("That answer is too short. Try again.")
+			continue
+		}
+		second, err := ui.Secret("  Type it again: ")
+		if err != nil {
+			return "", "", false
+		}
+		if normalize(first) != normalize(second) {
+			ui.Plain("Those didn't match. Try again.")
+			continue
+		}
+		return question, first, true
+	}
+}
+
+func normalize(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+
+func askAnswer(st *proto.Status) (string, bool) {
+	ui.Say(ui.Curious, "Security question:", st.Question)
+	answer, err := ui.Secret("  Answer: ")
+	if err != nil {
+		return "", false
+	}
+	resp, ok := call(proto.Request{Cmd: proto.CmdCheckAnswer, Answer: answer})
+	if !ok {
+		return "", false
+	}
+	if !resp.OK {
+		explain(resp)
+		return "", false
+	}
+	return answer, true
+}
+
 func authenticate() (string, bool) {
 	pw, err := ui.Secret("  Password: ")
 	if err != nil {
@@ -186,6 +259,20 @@ func explain(resp proto.Response) bool {
 			lines = append(lines, fmt.Sprintf("%d tries left before a cool-down.", st.AttemptsLeft))
 		}
 		ui.Say(ui.Oops, lines...)
+	case proto.CodeBadAnswer:
+		lines := []string{"That answer doesn't match."}
+		if st != nil && st.CooldownLeft > 0 {
+			lines = append(lines, "Too many tries. Wait "+duration(st.CooldownLeft)+" before the next one.")
+		} else if st != nil && st.AttemptsLeft > 0 {
+			lines = append(lines, fmt.Sprintf("%d tries left before a cool-down.", st.AttemptsLeft))
+		}
+		ui.Say(ui.Oops, lines...)
+	case proto.CodeWeakAnswer:
+		ui.Say(ui.Oops, "That answer is too short.")
+	case proto.CodeEmptyQuestion:
+		ui.Say(ui.Oops, "I need a question to ask you.")
+	case proto.CodeNoQuestion:
+		ui.Say(ui.Oops, "No security question is set yet.", "Add one with  peanut security_question")
 	case proto.CodeCooldown:
 		ui.Say(ui.Oops, "Too many wrong tries.", "Try again in "+duration(st.CooldownLeft)+".")
 	case proto.CodeForced:
@@ -261,6 +348,9 @@ func status(_ []string) int {
 	lines := []string{"Unlocked.", fmt.Sprintf("Allowed apps: %d", st.Apps)}
 	if st.Forced {
 		lines = append(lines, "Locking is off until you run  peanut reset_password.")
+	}
+	if !st.HasQuestion {
+		lines = append(lines, "Tip: add a security question with  peanut security_question")
 	}
 	ui.Say(ui.Happy, lines...)
 	return 0
@@ -461,17 +551,45 @@ func resetPassword(_ []string) int {
 	if !ok {
 		return 1
 	}
-	var old string
+	req := proto.Request{Cmd: proto.CmdReset}
 	if st.Forced {
-		ui.Say(ui.Curious, "You used force_unlock, so I won't ask for the old password.", "Let's pick a new one.")
-	} else if old, ok = authenticate(); !ok {
+		ui.Say(ui.Curious, "You used force_unlock, so I won't ask for the old password.")
+		if st.HasQuestion {
+			if req.Answer, ok = askAnswer(st); !ok {
+				return 1
+			}
+		}
+	} else {
+		pw, err := ui.Secret("  Current password (press Enter if you forgot it): ")
+		if err != nil {
+			return 1
+		}
+		switch {
+		case pw != "":
+			resp, ok := call(proto.Request{Cmd: proto.CmdCheck, Password: pw})
+			if !ok {
+				return 1
+			}
+			if !resp.OK {
+				return exit(explain(resp))
+			}
+			req.Password = pw
+		case !st.HasQuestion:
+			ui.Say(ui.Oops, "No security question is set, so I can't check it's you.", "If you are locked out, use  peanut force_unlock")
+			return 1
+		case st.Locked:
+			ui.Say(ui.Oops, "Peanut is locked, so the security question can't reset it.", "Use  peanut force_unlock  instead.")
+			return 1
+		default:
+			if req.Answer, ok = askAnswer(st); !ok {
+				return 1
+			}
+		}
+	}
+	if req.NewPassword, ok = newPassword(); !ok {
 		return 1
 	}
-	pw, ok := newPassword()
-	if !ok {
-		return 1
-	}
-	resp, ok := call(proto.Request{Cmd: proto.CmdReset, Password: old, NewPassword: pw})
+	resp, ok := call(req)
 	if !ok {
 		return 1
 	}
@@ -479,6 +597,29 @@ func resetPassword(_ []string) int {
 		return exit(explain(resp))
 	}
 	ui.Say(ui.Happy, "Password changed.", "Locking is available again.")
+	return 0
+}
+
+func securityQuestion(_ []string) int {
+	if _, ok := ready(); !ok {
+		return 1
+	}
+	pw, ok := authenticate()
+	if !ok {
+		return 1
+	}
+	question, answer, ok := newQuestion()
+	if !ok {
+		return 1
+	}
+	resp, ok := call(proto.Request{Cmd: proto.CmdSetQuestion, Password: pw, Question: question, Answer: answer})
+	if !ok {
+		return 1
+	}
+	if !resp.OK {
+		return exit(explain(resp))
+	}
+	ui.Say(ui.Happy, "Security question saved.")
 	return 0
 }
 
@@ -501,11 +642,17 @@ func forceUnlock(_ []string) int {
 			return 0
 		}
 	}
+	var answer string
+	if st.HasQuestion {
+		if answer, ok = askAnswer(st); !ok {
+			return 1
+		}
+	}
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 	defer signal.Stop(interrupt)
 	for {
-		resp, ok := call(proto.Request{Cmd: proto.CmdForce})
+		resp, ok := call(proto.Request{Cmd: proto.CmdForce, Answer: answer})
 		if !ok {
 			return 1
 		}

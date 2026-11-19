@@ -157,4 +157,3 @@ func openLog(dir string) *log.Logger {
 	}
 	return log.New(f, "", log.LstdFlags)
 }
-

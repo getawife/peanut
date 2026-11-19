@@ -17,6 +17,10 @@ type State struct {
 	Salt          []byte      `json:"salt"`
 	Hash          []byte      `json:"hash"`
 	Iterations    int         `json:"iterations"`
+	Question      string      `json:"question"`
+	AnswerSalt    []byte      `json:"answer_salt"`
+	AnswerHash    []byte      `json:"answer_hash"`
+	AnswerIter    int         `json:"answer_iter"`
 	Locked        bool        `json:"locked"`
 	LockedAt      time.Time   `json:"locked_at"`
 	Forced        bool        `json:"forced"`

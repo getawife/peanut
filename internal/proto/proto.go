@@ -12,6 +12,8 @@ const (
 	CmdReset              = "reset"
 	CmdForce              = "force"
 	CmdAuthorizeUninstall = "authorize_uninstall"
+	CmdSetQuestion        = "set_question"
+	CmdCheckAnswer        = "check_answer"
 )
 
 const (
@@ -34,6 +36,10 @@ const (
 	CodeForceStarted      = "force_started"
 	CodeForceWaiting      = "force_waiting"
 	CodeUnknownCommand    = "unknown_command"
+	CodeBadAnswer         = "bad_answer"
+	CodeWeakAnswer        = "weak_answer"
+	CodeEmptyQuestion     = "empty_question"
+	CodeNoQuestion        = "no_question"
 )
 
 type App struct {
@@ -46,6 +52,8 @@ type Request struct {
 	Name        string `json:"name,omitempty"`
 	Password    string `json:"password,omitempty"`
 	NewPassword string `json:"new_password,omitempty"`
+	Question    string `json:"question,omitempty"`
+	Answer      string `json:"answer,omitempty"`
 	App         *App   `json:"app,omitempty"`
 }
 
@@ -55,6 +63,8 @@ type Status struct {
 	Locked       bool   `json:"locked"`
 	Forced       bool   `json:"forced"`
 	Apps         int    `json:"apps"`
+	HasQuestion  bool   `json:"has_question"`
+	Question     string `json:"question,omitempty"`
 	GraceLeft    int    `json:"grace_left"`
 	ForceLeft    int    `json:"force_left"`
 	CooldownLeft int    `json:"cooldown_left"`

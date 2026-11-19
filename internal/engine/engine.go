@@ -13,7 +13,10 @@ import (
 	"peanut/internal/store"
 )
 
-const maxFails = 5
+const (
+	maxFails  = 5
+	minAnswer = 3
+)
 
 type Persister interface {
 	Load() (*store.State, error)
@@ -113,6 +116,16 @@ func (e *Engine) dispatch(req proto.Request) proto.Response {
 			return e.fail(code)
 		}
 		return e.ok()
+	case proto.CmdSetQuestion:
+		return e.setQuestion(req)
+	case proto.CmdCheckAnswer:
+		if !e.hasQuestion() {
+			return e.fail(proto.CodeNoQuestion)
+		}
+		if code := e.verifyAnswer(req.Answer); code != "" {
+			return e.fail(code)
+		}
+		return e.ok()
 	case proto.CmdAppsList:
 		resp := e.ok()
 		resp.Apps = append([]proto.App(nil), e.st.Apps...)
@@ -124,7 +137,7 @@ func (e *Engine) dispatch(req proto.Request) proto.Response {
 	case proto.CmdReset:
 		return e.reset(req)
 	case proto.CmdForce:
-		return e.force()
+		return e.force(req)
 	case proto.CmdAuthorizeUninstall:
 		if e.st.Locked {
 			return e.fail(proto.CodeLocked)
@@ -148,11 +161,29 @@ func (e *Engine) setup(req proto.Request) proto.Response {
 	if len(req.Password) < e.opt.MinPassword {
 		return e.fail(proto.CodeWeakPassword)
 	}
+	if code := validateQuestion(req.Question, req.Answer); code != "" {
+		return e.fail(code)
+	}
 	e.setPassword(req.Password)
+	e.setAnswer(req.Question, req.Answer)
 	e.st.Name = name
 	e.st.Configured = true
 	if err := e.save(); err != nil {
 		e.st.Configured = false
+		return e.fail(proto.CodeStorage)
+	}
+	return e.ok()
+}
+
+func (e *Engine) setQuestion(req proto.Request) proto.Response {
+	if code := e.authenticate(req.Password); code != "" {
+		return e.fail(code)
+	}
+	if code := validateQuestion(req.Question, req.Answer); code != "" {
+		return e.fail(code)
+	}
+	e.setAnswer(req.Question, req.Answer)
+	if err := e.save(); err != nil {
 		return e.fail(proto.CodeStorage)
 	}
 	return e.ok()
@@ -256,7 +287,24 @@ func (e *Engine) removeApp(req proto.Request) proto.Response {
 }
 
 func (e *Engine) reset(req proto.Request) proto.Response {
-	if !e.st.Forced {
+	switch {
+	case e.st.Forced:
+		if e.hasQuestion() {
+			if code := e.verifyAnswer(req.Answer); code != "" {
+				return e.fail(code)
+			}
+		}
+	case req.Answer != "":
+		if !e.hasQuestion() {
+			return e.fail(proto.CodeNoQuestion)
+		}
+		if e.st.Locked {
+			return e.fail(proto.CodeLocked)
+		}
+		if code := e.verifyAnswer(req.Answer); code != "" {
+			return e.fail(code)
+		}
+	default:
 		if code := e.authenticate(req.Password); code != "" {
 			return e.fail(code)
 		}
@@ -275,9 +323,14 @@ func (e *Engine) reset(req proto.Request) proto.Response {
 	return e.ok()
 }
 
-func (e *Engine) force() proto.Response {
+func (e *Engine) force(req proto.Request) proto.Response {
 	if !e.st.Locked {
 		return e.fail(proto.CodeNotLocked)
+	}
+	if e.hasQuestion() {
+		if code := e.verifyAnswer(req.Answer); code != "" {
+			return e.fail(code)
+		}
 	}
 	now := e.opt.Now()
 	if e.st.ForceAt.IsZero() {
@@ -309,11 +362,23 @@ func (e *Engine) force() proto.Response {
 }
 
 func (e *Engine) authenticate(password string) string {
+	return e.attempt(proto.CodeBadPassword, func() bool {
+		return secret.Verify(password, e.st.Salt, e.st.Hash, e.st.Iterations)
+	})
+}
+
+func (e *Engine) verifyAnswer(answer string) string {
+	return e.attempt(proto.CodeBadAnswer, func() bool {
+		return secret.Verify(normalizeAnswer(answer), e.st.AnswerSalt, e.st.AnswerHash, e.st.AnswerIter)
+	})
+}
+
+func (e *Engine) attempt(wrong string, correct func() bool) string {
 	now := e.opt.Now()
 	if now.Before(e.st.CooldownUntil) {
 		return proto.CodeCooldown
 	}
-	if secret.Verify(password, e.st.Salt, e.st.Hash, e.st.Iterations) {
+	if correct() {
 		if e.st.Fails != 0 || !e.st.CooldownUntil.IsZero() {
 			e.st.Fails = 0
 			e.st.CooldownUntil = time.Time{}
@@ -327,7 +392,30 @@ func (e *Engine) authenticate(password string) string {
 		e.st.CooldownUntil = now.Add(30 * time.Second << shift)
 	}
 	_ = e.save()
-	return proto.CodeBadPassword
+	return wrong
+}
+
+func (e *Engine) hasQuestion() bool { return e.st.Question != "" }
+
+func (e *Engine) setAnswer(question, answer string) {
+	e.st.Question = strings.TrimSpace(question)
+	e.st.AnswerSalt = secret.NewSalt()
+	e.st.AnswerIter = e.opt.Iterations
+	e.st.AnswerHash = secret.Hash(normalizeAnswer(answer), e.st.AnswerSalt, e.st.AnswerIter)
+}
+
+func normalizeAnswer(answer string) string {
+	return strings.ToLower(strings.Join(strings.Fields(answer), " "))
+}
+
+func validateQuestion(question, answer string) string {
+	if strings.TrimSpace(question) == "" {
+		return proto.CodeEmptyQuestion
+	}
+	if len(normalizeAnswer(answer)) < minAnswer {
+		return proto.CodeWeakAnswer
+	}
+	return ""
 }
 
 func (e *Engine) setPassword(password string) {
@@ -341,11 +429,13 @@ func (e *Engine) save() error { return e.store.Save(e.st) }
 func (e *Engine) status() *proto.Status {
 	now := e.opt.Now()
 	st := &proto.Status{
-		Configured: e.st.Configured,
-		Name:       e.st.Name,
-		Locked:     e.st.Locked,
-		Forced:     e.st.Forced,
-		Apps:       len(e.st.Apps),
+		Configured:  e.st.Configured,
+		Name:        e.st.Name,
+		Locked:      e.st.Locked,
+		Forced:      e.st.Forced,
+		Apps:        len(e.st.Apps),
+		HasQuestion: e.hasQuestion(),
+		Question:    e.st.Question,
 	}
 	if e.st.Locked {
 		st.GraceLeft = max(seconds(e.st.LockedAt.Add(e.opt.Grace).Sub(now)), 0)
