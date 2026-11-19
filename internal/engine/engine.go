@@ -27,6 +27,7 @@ type Options struct {
 	ForceWait   time.Duration
 	Grace       time.Duration
 	MinPassword int
+	Version     string
 	Iterations  int
 	Now         func() time.Time
 	Exists      func(string) bool
@@ -69,6 +70,12 @@ func (e *Engine) Locked() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.st.Locked
+}
+
+func (e *Engine) AutoUpdate() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.st.AutoUpdateOff
 }
 
 func (e *Engine) Enforcement() (bool, []string) {
@@ -126,6 +133,17 @@ func (e *Engine) dispatch(req proto.Request) proto.Response {
 			return e.fail(code)
 		}
 		return e.ok()
+
+	case proto.CmdSetAutoUpdate:
+		if code := e.authenticate(req.Password); code != "" {
+			return e.fail(code)
+		}
+		e.st.AutoUpdateOff = !req.Enable
+		if err := e.save(); err != nil {
+			return e.fail(proto.CodeStorage)
+		}
+		return e.ok()
+
 	case proto.CmdAppsList:
 		resp := e.ok()
 		resp.Apps = append([]proto.App(nil), e.st.Apps...)
@@ -436,6 +454,8 @@ func (e *Engine) status() *proto.Status {
 		Apps:        len(e.st.Apps),
 		HasQuestion: e.hasQuestion(),
 		Question:    e.st.Question,
+		Version:     e.opt.Version,
+		AutoUpdate:  !e.st.AutoUpdateOff,
 	}
 	if e.st.Locked {
 		st.GraceLeft = max(seconds(e.st.LockedAt.Add(e.opt.Grace).Sub(now)), 0)

@@ -19,7 +19,7 @@ const (
 	pipeSDDL       = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
 	maxConnections = 16
 	maxRequestSize = 1 << 20
-	connDeadline   = 20 * time.Second
+	connDeadline   = 90 * time.Second
 	firstInstance  = 0x00080000
 )
 

@@ -37,6 +37,7 @@ func init() {
 		{"reset_password", "Change your password", resetPassword},
 		{"security_question", "Add or change your security question", securityQuestion},
 		{"force_unlock", "Forgot your password? Unlocks after a wait", forceUnlock},
+		{"update", "Check for a new version (update on / update off changes automatic updates)", updateCmd},
 		{"status", "See what is going on right now", status},
 		{"install", "Install Peanut as a Windows service", install},
 		{"uninstall", "Remove Peanut from this computer", uninstall},
@@ -335,7 +336,7 @@ func status(_ []string) int {
 		return 1
 	}
 	if st.Locked {
-		lines := []string{"Locked.", fmt.Sprintf("Allowed apps: %d", st.Apps)}
+		lines := []string{"Locked.", fmt.Sprintf("Allowed apps: %d", st.Apps), "Version: " + st.Version}
 		if st.GraceLeft > 0 {
 			lines = append(lines, "Other apps close in "+duration(st.GraceLeft)+".")
 		}
@@ -345,7 +346,7 @@ func status(_ []string) int {
 		ui.Say(ui.Sleepy, lines...)
 		return 0
 	}
-	lines := []string{"Unlocked.", fmt.Sprintf("Allowed apps: %d", st.Apps)}
+	lines := []string{"Unlocked.", fmt.Sprintf("Allowed apps: %d", st.Apps), "Version: " + st.Version}
 	if st.Forced {
 		lines = append(lines, "Locking is off until you run  peanut reset_password.")
 	}
@@ -648,111 +649,4 @@ func forceUnlock(_ []string) int {
 			return 1
 		}
 	}
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-	defer signal.Stop(interrupt)
-	for {
-		resp, ok := call(proto.Request{Cmd: proto.CmdForce, Answer: answer})
-		if !ok {
-			return 1
-		}
-		if resp.OK && resp.Code == proto.CodeOK {
-			ui.Say(ui.Happy, "Force-unlocked.", "Run  peanut reset_password  to turn locking back on.")
-			return 0
-		}
-		if !resp.OK {
-			return exit(explain(resp))
-		}
-		if !countdown(resp.Wait, interrupt) {
-			ui.Plain("Stopped. The timer keeps running. Run  peanut force_unlock  again later.")
-			return 0
-		}
-	}
-}
-
-func countdown(seconds int, interrupt <-chan os.Signal) bool {
-	end := time.Now().Add(time.Duration(seconds) * time.Second)
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
-	for time.Now().Before(end) {
-		left := int(time.Until(end).Round(time.Second).Seconds())
-		fmt.Printf("\r  Unlocking in %s  (Ctrl+C to stop watching)   ", duration(max(left, 0)))
-		select {
-		case <-interrupt:
-			fmt.Println()
-			return false
-		case <-tick.C:
-		}
-	}
-	fmt.Println()
-	return true
-}
-
-func install(_ []string) int {
-	if !installer.Elevated() {
-		ui.Say(ui.Curious, "Peanut needs administrator rights to install.", "Windows will ask for permission in a moment.")
-		if err := installer.Relaunch("install", "--pause"); err != nil {
-			ui.Say(ui.Oops, "I couldn't ask for permission.", err.Error())
-			return 1
-		}
-		return 0
-	}
-	if err := installer.Install(); err != nil {
-		ui.Say(ui.Oops, "The install didn't finish.", err.Error())
-		return 1
-	}
-	for i := 0; i < 25; i++ {
-		if _, ok := ipcStatus(); ok {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	ui.Say(ui.Happy, "Peanut is installed and running.", "Open a new terminal window to use the  peanut  command.")
-	if _, ok := ready(); !ok {
-		return 1
-	}
-	return 0
-}
-
-func start(_ []string) int {
-	if _, ok := ipcStatus(); !ok {
-		ui.Say(ui.Happy, "Welcome to Peanut!", "I'll install myself now. Windows will ask for permission.")
-		return install(nil)
-	}
-	return help(nil)
-}
-
-func ipcStatus() (proto.Response, bool) {
-	resp, err := ipc.Call(proto.Request{Cmd: proto.CmdStatus})
-	return resp, err == nil
-}
-
-func uninstall(_ []string) int {
-	if !installer.Elevated() {
-		ui.Say(ui.Curious, "Removing Peanut needs administrator rights.", "Windows will ask for permission in a moment.")
-		if err := installer.Relaunch("uninstall", "--pause"); err != nil {
-			ui.Say(ui.Oops, "I couldn't ask for permission.", err.Error())
-			return 1
-		}
-		return 0
-	}
-	if resp, ok := ipcStatus(); ok && resp.Status.Configured {
-		pw, err := ui.Secret("  Password: ")
-		if err != nil {
-			return 1
-		}
-		auth, ok := call(proto.Request{Cmd: proto.CmdAuthorizeUninstall, Password: pw})
-		if !ok {
-			return 1
-		}
-		if !auth.OK {
-			return exit(explain(auth))
-		}
-	}
-	if err := installer.Uninstall(); err != nil {
-		ui.Say(ui.Oops, "I couldn't finish removing Peanut.", err.Error())
-		return 1
-	}
-	ui.Say(ui.Sleepy, "Peanut is gone. Bye for now!")
-	return 0
-}
+	interrupt := make(chan os.Signal,

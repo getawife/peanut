@@ -14,6 +14,8 @@ const (
 	CmdAuthorizeUninstall = "authorize_uninstall"
 	CmdSetQuestion        = "set_question"
 	CmdCheckAnswer        = "check_answer"
+	CmdUpdate             = "update"
+	CmdSetAutoUpdate      = "set_auto_update"
 )
 
 const (
@@ -40,6 +42,11 @@ const (
 	CodeWeakAnswer        = "weak_answer"
 	CodeEmptyQuestion     = "empty_question"
 	CodeNoQuestion        = "no_question"
+	CodeUpToDate          = "up_to_date"
+	CodeUpdateReady       = "update_ready"
+	CodeUpdating          = "updating"
+	CodeUpdateFailed      = "update_failed"
+	CodeUpdatesDisabled   = "updates_disabled"
 )
 
 type App struct {
@@ -54,6 +61,7 @@ type Request struct {
 	NewPassword string `json:"new_password,omitempty"`
 	Question    string `json:"question,omitempty"`
 	Answer      string `json:"answer,omitempty"`
+	Enable      bool   `json:"enable,omitempty"`
 	App         *App   `json:"app,omitempty"`
 }
 
@@ -65,6 +73,8 @@ type Status struct {
 	Apps         int    `json:"apps"`
 	HasQuestion  bool   `json:"has_question"`
 	Question     string `json:"question,omitempty"`
+	Version      string `json:"version,omitempty"`
+	AutoUpdate   bool   `json:"auto_update"`
 	GraceLeft    int    `json:"grace_left"`
 	ForceLeft    int    `json:"force_left"`
 	CooldownLeft int    `json:"cooldown_left"`
@@ -75,6 +85,7 @@ type Response struct {
 	OK     bool    `json:"ok"`
 	Code   string  `json:"code,omitempty"`
 	Wait   int     `json:"wait,omitempty"`
+	Text   string  `json:"text,omitempty"`
 	Status *Status `json:"status,omitempty"`
 	Apps   []App   `json:"apps,omitempty"`
 }

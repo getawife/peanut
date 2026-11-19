@@ -28,6 +28,7 @@ type State struct {
 	CooldownUntil time.Time   `json:"cooldown_until"`
 	ForceAt       time.Time   `json:"force_at"`
 	Apps          []proto.App `json:"apps"`
+	AutoUpdateOff bool        `json:"auto_update_off"`
 }
 
 type Store struct{ Dir string }

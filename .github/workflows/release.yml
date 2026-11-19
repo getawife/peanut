@@ -15,8 +15,11 @@ jobs:
         with:
           go-version: "1.22"
       - run: go mod tidy
-      - run: go test ./internal/engine ./internal/secret
-      - run: go build -ldflags "-s -w" -o peanut.exe .
+      - run: go test ./internal/engine ./internal/secret ./internal/update
+      - run: go build -ldflags "-s -w -X peanut/internal/version.Version=${{ github.ref_name }}" -o peanut.exe .
+      - run: go run ./cmd/peanutsign sign peanut.exe
+        env:
+          PEANUT_SIGNING_KEY: ${{ secrets.PEANUT_SIGNING_KEY }}
       - run: choco install innosetup -y --no-progress
       - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DVersion=${{ github.ref_name }} installer\peanut.iss'
       - run: |
@@ -28,4 +31,5 @@ jobs:
             dist/PeanutSetup.exe
             PeanutSetup.exe.sha256
             peanut.exe
+            peanut.exe.sig
             peanut.exe.sha256

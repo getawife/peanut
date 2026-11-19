@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"golang.org/x/sys/windows"
 	winsvc "golang.org/x/sys/windows/svc"
@@ -13,7 +15,10 @@ import (
 	"peanut/internal/engine"
 	"peanut/internal/guard"
 	"peanut/internal/ipc"
+	"peanut/internal/proto"
 	"peanut/internal/store"
+	"peanut/internal/update"
+	"peanut/internal/version"
 )
 
 const (
@@ -36,12 +41,31 @@ func Main() int {
 	}
 	hardenDir(dir)
 	logger := openLog(dir)
-	eng, err := engine.New(store.Store{Dir: dir}, engine.DefaultOptions())
+	opts := engine.DefaultOptions()
+	opts.Version = version.Version
+	eng, err := engine.New(store.Store{Dir: dir}, opts)
 	if err != nil {
 		logger.Printf("cannot load state: %v", err)
 		return 1
 	}
-	h := &handler{eng: eng, logger: logger, changes: make(chan bool, 4)}
+	exe, err := os.Executable()
+	if err != nil {
+		return 1
+	}
+	h := &handler{eng: eng, logger: logger, changes: make(chan bool, 4), restart: make(chan struct{})}
+	h.updater = update.New(update.Config{
+		Current:   version.Version,
+		DataDir:   dir,
+		Exe:       exe,
+		PublicKey: update.PublicKey(),
+		Enabled:   eng.AutoUpdate,
+		Idle:      func() bool { return !eng.Locked() },
+		Restart:   h.requestRestart,
+		Logger:    logger,
+	})
+	if h.updater.BeginStart() {
+		return 1
+	}
 	eng.OnLock = func(locked bool) {
 		if err := applyServiceDACL(locked); err != nil {
 			logger.Printf("service permissions: %v", err)
@@ -49,6 +73,9 @@ func Main() int {
 		select {
 		case h.changes <- locked:
 		default:
+		}
+		if !locked {
+			h.updater.Poke()
 		}
 	}
 	if err := winsvc.Run(Name, h); err != nil {
@@ -59,9 +86,35 @@ func Main() int {
 }
 
 type handler struct {
-	eng     *engine.Engine
-	logger  *log.Logger
-	changes chan bool
+	eng         *engine.Engine
+	updater     *update.Updater
+	logger      *log.Logger
+	changes     chan bool
+	restart     chan struct{}
+	restartOnce sync.Once
+}
+
+func (h *handler) requestRestart() { h.restartOnce.Do(func() { close(h.restart) }) }
+
+func (h *handler) dispatch(req proto.Request) proto.Response {
+	if req.Cmd != proto.CmdUpdate {
+		return h.eng.Handle(req)
+	}
+	res := h.updater.Check()
+	resp := proto.Response{Text: res.Version}
+	switch res.Code {
+	case update.ResultCurrent:
+		resp.OK, resp.Code = true, proto.CodeUpToDate
+	case update.ResultReady:
+		resp.OK, resp.Code = true, proto.CodeUpdateReady
+	case update.ResultApplying:
+		resp.OK, resp.Code = true, proto.CodeUpdating
+	case update.ResultDisabled:
+		resp.Code = proto.CodeUpdatesDisabled
+	default:
+		resp.Code = proto.CodeUpdateFailed
+	}
+	return resp
 }
 
 func accepted(locked bool) winsvc.Accepted {
@@ -75,8 +128,9 @@ func (h *handler) Execute(_ []string, requests <-chan winsvc.ChangeRequest, stat
 	status <- winsvc.Status{State: winsvc.StartPending}
 	stop := make(chan struct{})
 	go guard.Run(h.eng, stop, h.logger)
+	go h.updater.Loop(stop)
 	go func() {
-		if err := ipc.Serve(h.eng.Handle); err != nil {
+		if err := ipc.Serve(h.dispatch); err != nil {
 			h.logger.Printf("pipe server: %v", err)
 		}
 	}()
@@ -85,10 +139,15 @@ func (h *handler) Execute(_ []string, requests <-chan winsvc.ChangeRequest, stat
 		h.logger.Printf("service permissions: %v", err)
 	}
 	status <- winsvc.Status{State: winsvc.Running, Accepts: accepted(locked)}
+	time.AfterFunc(update.HealthyAfter, h.updater.MarkHealthy)
 	for {
 		select {
 		case l := <-h.changes:
 			status <- winsvc.Status{State: winsvc.Running, Accepts: accepted(l)}
+		case <-h.restart:
+			close(stop)
+			status <- winsvc.Status{State: winsvc.StopPending}
+			return true, 1
 		case req := <-requests:
 			switch req.Cmd {
 			case winsvc.Interrogate:

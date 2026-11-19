@@ -24,6 +24,7 @@
 | `peanut unlock`                | Unlock (password needed)                                   |
 | `peanut reset_password`        | Change your password (old password needed)                 |
 | `peanut force_unlock`          | Forgot your password? Unlocks after a 5 minute wait        |
+| `peanut security_question`     | Add or change your security question (password needed)     |
 | `peanut status`                | Show what is going on                                      |
 | `peanut uninstall`             | Remove Peanut (password needed, must be unlocked)          |
 
