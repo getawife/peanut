@@ -50,6 +50,10 @@ func Run(args []string) (code int) {
 	if pause {
 		args = args[:len(args)-1]
 	}
+	if len(args) == 0 && launchedByDoubleClick() {
+		args = []string{"start"}
+		pause = true
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Printf("\n  Peanut crashed: %v\n", r)
@@ -65,6 +69,9 @@ func Run(args []string) (code int) {
 func dispatch(args []string) int {
 	if len(args) == 0 {
 		return help(nil)
+	}
+	if strings.ToLower(args[0]) == "start" {
+		return start(nil)
 	}
 	name := strings.ReplaceAll(strings.ToLower(args[0]), "-", "_")
 	if alias, ok := aliases[strings.ToLower(args[0])]; ok {
@@ -558,6 +565,14 @@ func install(_ []string) int {
 		return 1
 	}
 	return 0
+}
+
+func start(_ []string) int {
+	if _, ok := ipcStatus(); !ok {
+		ui.Say(ui.Happy, "Welcome to Peanut!", "I'll install myself now. Windows will ask for permission.")
+		return install(nil)
+	}
+	return help(nil)
 }
 
 func ipcStatus() (proto.Response, bool) {

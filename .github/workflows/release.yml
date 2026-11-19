@@ -17,9 +17,15 @@ jobs:
       - run: go mod tidy
       - run: go test ./internal/engine ./internal/secret
       - run: go build -ldflags "-s -w" -o peanut.exe .
-      - run: (Get-FileHash peanut.exe -Algorithm SHA256).Hash | Out-File -Encoding ascii peanut.exe.sha256
+      - run: choco install innosetup -y --no-progress
+      - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DVersion=${{ github.ref_name }} installer\peanut.iss'
+      - run: |
+          (Get-FileHash peanut.exe -Algorithm SHA256).Hash | Out-File -Encoding ascii peanut.exe.sha256
+          (Get-FileHash dist\PeanutSetup.exe -Algorithm SHA256).Hash | Out-File -Encoding ascii PeanutSetup.exe.sha256
       - uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/PeanutSetup.exe
+            PeanutSetup.exe.sha256
             peanut.exe
             peanut.exe.sha256
